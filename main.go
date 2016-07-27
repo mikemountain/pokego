@@ -1,23 +1,33 @@
 package main
 
 import (
-	"bytes"
-	"crypto/tls"
-	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"net/http"
-	"net/http/cookiejar"
-	"net/url"
+	"sort"
 
-	log "github.com/Sirupsen/logrus"
-	"github.com/icza/session"
-	"golang.org/x/net/publicsuffix"
+	"github.com/golang/geo/s2"
 )
 
 var latitude = 45.4159064
 var longitude = -75.6934399
 var altitude = 72
+
+type Uint64Slice []uint64
+
+func (s Uint64Slice) Len() int           { return len(s) }
+func (s Uint64Slice) Less(i, j int) bool { return s[i] < s[j] }
+func (s Uint64Slice) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
+
+type responseRtmStart struct {
+	Ok    bool         `json:"ok"`
+	Error string       `json:"error"`
+	Url   string       `json:"url"`
+	Self  responseSelf `json:"self"`
+}
+
+type responseSelf struct {
+	Id string `json:"id"`
+}
 
 type LoginGET struct {
 	LT         string `json:"lt"`
@@ -29,6 +39,10 @@ type LoginPOST struct {
 	EventID  string `json:"_eventId"`
 	Username string `json:"username"`
 	Password string `json:"password"`
+}
+
+type LoginJar struct {
+	Jar map[string][]*http.Cookie
 }
 
 type Pokemon struct {
@@ -56,109 +70,98 @@ type NextEvo struct {
 }
 
 func main() {
-	session.Global.Close()
-	session.Global = session.NewCookieManagerOptions(session.NewInMemStore(), &session.CookieMngrOptions{AllowHTTP: true})
+	// session.Global.Close()
+	// session.Global = session.NewCookieManagerOptions(session.NewInMemStore(), &session.CookieMngrOptions{AllowHTTP: true})
 
-	dat, err := ioutil.ReadFile("pokemon.json")
-	if err != nil {
-		log.Error(err)
-	}
+	// dat, err := ioutil.ReadFile("pokemon.json")
+	// if err != nil {
+	// 	log.Error(err)
+	// }
 
-	pokemon := []Pokemon{}
-	json.Unmarshal(dat, &pokemon)
+	// pokemon := []Pokemon{}
+	// json.Unmarshal(dat, &pokemon)
 
-	username := "PhireSlack"
-	password := "mainstreet"
+	// for _, v := range pokemon {
+	// 	fmt.Println(v.Name)
+	// }
 
-	login(username, password)
+	// username := "PhireSlack"
+	// password := "mainstreet"
+
+	// // login(username, password)
+
+	// provider, err := auth.NewProvider("ptc", username, password)
+	// if err != nil {
+	// 	fmt.Println(err)
+	// 	return
+	// }
+
+	// // Set the coordinates from where you're connecting
+	// location := &api.Location{
+	// 	Lon: longitude,
+	// 	Lat: latitude,
+	// 	Alt: 72.0,
+	// }
+
+	// // Start new session and connect
+	// session := api.NewSession(provider, location, false)
+	// session.Init()
+
+	// // Start querying the API
+	// player, err := session.GetPlayer()
+	// if err != nil {
+	// 	fmt.Println(err)
+	// 	return
+	// }
+
+	// out, err := json.Marshal(player)
+	// if err != nil {
+	// 	fmt.Println(err)
+	// 	return
+	// }
+
+	// fmt.Println(string(out))
+
+	// slack part
+	// token := "xoxb-63465485520-BOhuvOoBsWw7309OgJiAvppM"
+	// url := fmt.Sprintf("https://slack.com/api/rtm.start?token=%s", token)
+	// resp, err := http.Get(url)
+	// //...
+	// body, err := ioutil.ReadAll(resp.Body)
+	// //...
+	// var respObj responseRtmStart
+	// err = json.Unmarshal(body, &respObj)
+
+	// if err != nil {
+	// 	log.Error(err)
+	// }
+
+	// fmt.Println(respObj)
+
+	getCellIDs(latitude, longitude, 10)
 }
 
-func login(user string, pass string) {
-	loginStr := "https://sso.pokemon.com/sso/login?service=https%3A%2F%2Fsso.pokemon.com%2Fsso%2Foauth2.0%2FcallbackAuthorize"
+func getCellIDs(lat, long float64, rad int) {
+	var walk []uint64
 
-	loginURL, _ := url.Parse(loginStr)
+	ll := s2.LatLngFromDegrees(lat, long)
+	origin := s2.CellIDFromLatLng(ll).Parent(15)
+	walk = append(walk, origin.Pos())
+	right := origin.Next()
+	left := origin.Prev()
 
-	options := cookiejar.Options{
-		PublicSuffixList: publicsuffix.List,
-	}
-	jar, err := cookiejar.New(&options)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	req, err := http.NewRequest("GET", loginStr, nil)
-	req.Header.Set("User-Agent", "niantic")
-	if err != nil {
-		log.Error(err)
+	for i := 0; i < rad; i++ {
+		walk = append(walk, right.Pos())
+		walk = append(walk, left.Pos())
+		right = right.Next()
+		left = left.Prev()
 	}
 
-	sess := session.Get(req)
-	sess = session.NewSession()
-	// jar.SetCookies(loginURL, req.Header.Get("Set-Cookie"))
-	// session.Add(sess, w?????)
+	sort.Sort(Uint64Slice(walk))
 
-	if sess == nil {
-		fmt.Printf("else: %v\n", sess)
-		log.Fatal("i don't know")
-	}
-
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
-	client := &http.Client{
-		Transport: tr,
-		Jar:       jar,
-	}
-
-	response, err := client.Do(req)
-	if err != nil {
-		log.Error(err)
-	}
-	defer response.Body.Close()
-
-	client.Jar.SetCookies(loginURL, response.Cookies())
-
-	jdata := LoginGET{}
-
-	dat, err := ioutil.ReadAll(response.Body)
-	if err != nil {
-		log.Error(err)
-	}
-
-	json.Unmarshal(dat, &jdata)
-	// fmt.Println(jdata.LT)
-
-	loginPost := &LoginPOST{
-		LoginGET: jdata,
-		EventID:  "submit",
-		Username: user,
-		Password: pass,
-	}
-
-	resLoginPost, _ := json.Marshal(loginPost)
-	// fmt.Println(string(resLoginPost))
-
-	req, err = http.NewRequest("POST", loginStr, bytes.NewBuffer(resLoginPost))
-	if err != nil {
-		log.Error(err)
-	}
-	req.Header.Set("User-Agent", "niantic")
-	req.AddCookie(response.Cookies()[0])
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Error(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		log.Error("Server return non-200 status: %v\n", resp.Status)
-	}
-
-	// ticket := resp.Header.Get("Location")
-	fmt.Printf("%+v\n", resp)
-
-	// loc, loc2 := resp.Location()
-
-	// fmt.Printf("%+v\n", loc)
-	// fmt.Printf("%+v\n", loc2)
-
+	fmt.Println(walk)
 }
+
+// func (s Uint64Slice) Sort() {
+// 	sort.Sort(s)
+// }
